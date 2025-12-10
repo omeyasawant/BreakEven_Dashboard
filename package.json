@@ -1,0 +1,133 @@
+{
+  "name": "breakevendashboard",
+  "version": "1.0.0",
+  "description": "BreakEven Dashboard",
+  "author": "thefakeliterate",
+  "main": "electron.js",
+  "scripts": {
+    "start": "concurrently \"react-scripts start\" \"wait-on http://localhost:3000 && electron .\"",
+    "build": "react-scripts build",
+    "dist": "electron-builder",
+    "make": "electron-forge make",
+    "postinstall": "echo 'Suppressing Deprecate warnings...'"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "wait-on": "^7.0.1"
+  },
+  "devDependencies": {
+    "electron": "^25.3.1",
+    "electron-squirrel-startup": "^1.0.1",
+    "@electron-forge/cli": "^6.0.0-beta.61",
+    "@electron-forge/maker-deb": "^6.0.0-beta.61",
+    "@electron-forge/maker-rpm": "^6.0.0-beta.61",
+    "@electron-forge/maker-squirrel": "^6.0.0-beta.61",
+    "@electron-forge/maker-zip": "^6.0.0-beta.61",
+    "@electron-forge/maker-dmg": "^6.0.0-beta.61",
+    "react-scripts": "5.0.1",
+    "concurrently": "^8.2.0",
+    "wait-on": "^7.0.1",
+    "electron-packager": "^17.1.1"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "homepage": "./",
+  "productName": "breakevendashboard",
+  "appId": "com.breakeventx.breakevendashboard",
+  "license": "thefakeliterate",
+  "engines": {
+    "node": ">=14.17.5"
+  },
+  "engineStrict": true,
+  "build": {
+    "appId": "com.breakeven.dashboard",
+    "productName": "BreakEven Dashboard",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "build/**/*",
+      "public/**/*",
+      "electron.js",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": "nsis"
+    }
+  },
+  "config": {
+    "forge": {
+      "packagerConfig": {
+        "out": "C:\\Users\\omeya\\OneDrive\\Desktop\\BREAKEVEN\\BreakEvenClient\\scripts\\out",
+        "icon": "assets/icon",
+        "executableName": "breakevendashboard",
+        "asar": true,
+        "asarUnpack": [
+          "**/video-bg.mp4"
+        ]
+      },
+      "makers": [
+        {
+          "name": "@electron-forge/maker-squirrel",
+          "config": {
+            "name": "breakeven_dashboard",
+            "authors": "Breakeven LLC",
+            "description": "Dashboard for BreakEven Client",
+            "exe": "breakevendashboard.exe",
+            "setupIcon": "assets/icon.ico",
+            "shortcutName": "BreakEven Client",
+            "setupExe": "BreakEven.exe",
+            "processStart": "breakevendashboard.exe"
+          }
+        },
+        {
+          "name": "@electron-forge/maker-dmg",
+          "config": {
+            "format": "ULFO",
+            "icon": "assets/icon.icns",
+            "overwrite": true
+          }
+        },
+        {
+          "name": "@electron-forge/maker-zip",
+          "platforms": [
+            "darwin"
+          ]
+        },
+        {
+          "name": "@electron-forge/maker-deb",
+          "config": {}
+        },
+        {
+          "name": "@electron-forge/maker-rpm",
+          "config": {}
+        }
+      ],
+      "files": [
+        "assets/**/*",
+        "icon.ico",
+        "icon.png",
+        "electron.js",
+        "index.html",
+        "video-bg.mp4",
+        "asset-manifest.json",
+        "static/**/*",
+        "package.json"
+      ]
+    }
+  }
+}
