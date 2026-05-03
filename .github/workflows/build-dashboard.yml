@@ -1,0 +1,131 @@
+name: Build Dashboard
+
+on:
+  push:
+    branches:
+        - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+        fail-fast: false
+        matrix:
+          os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+
+        - name: Setup Node
+          uses: actions/setup-node@v4
+          with:
+            node-version: '20'
+
+        - name: Install Linux Packaging Tools
+          if: runner.os == 'Linux'
+          run: sudo apt-get update && sudo apt-get install -y dpkg rpm
+
+        - name: Install macOS Packaging Tools
+          if: runner.os == 'macOS'
+          run: brew install create-dmg || echo "create-dmg already installed"
+
+        - name: Install dependencies
+          run: npm install --no-audit --no-fund
+
+        - name: Build distributables
+          run: node scripts/build-cross-platform.js
+
+        - name: "Debug: List output contents (bash)"
+          if: runner.os != 'Windows'
+          run: ls -R out/
+          shell: bash
+
+        - name: "Debug: List output contents (pwsh)"
+          if: runner.os == 'Windows'
+          run: Get-ChildItem -Recurse out
+          shell: pwsh
+        
+        - name: Confirm distributables (Linux/macOS)
+          if: runner.os != 'Windows'
+          shell: bash
+          run: |
+            echo "🧪 Checking distributables..."
+            found=0
+            if ls out/make/*.dmg 1> /dev/null 2>&1; then echo "✅ Found .dmg"; found=1; fi
+            if ls out/make/AppImage/*/*.AppImage 1> /dev/null 2>&1; then echo "✅ Found .AppImage"; found=1; fi
+            if ls out/make/deb/*/*.deb 1> /dev/null 2>&1; then echo "✅ Found .deb"; found=1; fi
+            if ls out/make/rpm/*/*.rpm 1> /dev/null 2>&1; then echo "✅ Found .rpm"; found=1; fi
+            if ls out/make/*.zip 1> /dev/null 2>&1; then echo "✅ Found .zip"; found=1; fi
+            if [ $found -eq 0 ]; then
+              echo "❌ No distributables found. Failing build."
+              exit 1
+            fi
+
+        - name: Confirm distributables (Windows)
+          if: runner.os == 'Windows'
+          shell: pwsh
+          run: |
+            Write-Host "🧪 Checking distributables..."
+            $found = $false
+            if (Test-Path -Path "out/make/squirrel.windows/*/*.exe") { Write-Host "✅ Found .exe"; $found = $true }
+            if (Test-Path -Path "out/make/dmg/*/*.dmg") { Write-Host "✅ Found .dmg"; $found = $true }
+            if (Test-Path -Path "out/make/AppImage/*/*.AppImage") { Write-Host "✅ Found .AppImage"; $found = $true }
+            if (Test-Path -Path "out/make/deb/*/*.deb") { Write-Host "✅ Found .deb"; $found = $true }
+            if (Test-Path -Path "out/make/rpm/*/*.rpm") { Write-Host "✅ Found .rpm"; $found = $true }
+            if (-not $found) {
+              Write-Error "❌ No distributables found. Failing build."
+              exit 1
+            }  
+
+        - name: Upload Artifacts
+          uses: actions/upload-artifact@v4
+          with:
+            name: dashboard-${{ matrix.os }}
+            path: |
+              out/make/**/*.exe
+              out/make/**/*.dmg
+              out/make/**/*.AppImage
+              out/make/**/*.deb
+              out/make/**/*.rpm
+  verify:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-platform-artifacts/
+
+      - name: List All Artifacts
+        run: ls -R all-platform-artifacts/
+
+      - name: Confirm artifact presence
+        shell: bash
+        run: |
+          echo "🧪 Verifying downloaded artifacts..."
+          count=$(find all-platform-artifacts -type f | grep -Ei '.(exe|dmg|AppImage|deb|rpm)$' | wc -l)
+          if [ "$count" -lt 1 ]; then
+              echo "❌ No distributables found."
+              exit 1
+          fi
+          echo "✅ Found $count artifacts."
+
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly
+          name: "Automated Installer Release"
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Build Summary
+        run: |
+          echo "## ✅ Installer Summary" >> $GITHUB_STEP_SUMMARY
+          find all-platform-artifacts -type f >> $GITHUB_STEP_SUMMARY
