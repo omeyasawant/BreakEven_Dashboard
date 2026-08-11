@@ -1,0 +1,263 @@
+name: Build Dashboard
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    env:
+      DASHBOARD_MAC_ARCH: "universal"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Linux Packaging Tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y dpkg rpm
+
+      - name: Install macOS Packaging Tools
+        if: runner.os == 'macOS'
+        run: brew install create-dmg || echo "create-dmg already installed"
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_SIGNING_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12_BASE64 }}
+          APPLE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_SIGNING_CERTIFICATE_P12_BASE64" ] || [ -z "$APPLE_SIGNING_CERTIFICATE_PASSWORD" ] || [ -z "$APPLE_KEYCHAIN_PASSWORD" ]; then
+            echo "APPLE_CERTIFICATE_IMPORTED=false" >> "$GITHUB_ENV"
+            echo "⚠️ Skipping Apple signing certificate import because one or more certificate secrets are missing."
+            exit 0
+          fi
+
+          set -euo pipefail
+          cert_path="$RUNNER_TEMP/breakevendashboard-signing-cert.p12"
+          keychain_path="$RUNNER_TEMP/breakevendashboard-signing.keychain-db"
+          CERT_PATH="$cert_path" python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["CERT_PATH"]).write_bytes(
+              base64.b64decode(os.environ["APPLE_SIGNING_CERTIFICATE_P12_BASE64"])
+          )
+          PY
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$cert_path" -k "$keychain_path" -P "$APPLE_SIGNING_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          existing_keychains="$(security list-keychains -d user | tr -d '"')"
+          security list-keychains -d user -s "$keychain_path" $existing_keychains
+          security default-keychain -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+          echo "APPLE_CERTIFICATE_IMPORTED=true" >> "$GITHUB_ENV"
+
+      - name: Warn when Apple signing secrets are unavailable
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APPLE_CERTIFICATE_IMPORTED="${APPLE_CERTIFICATE_IMPORTED:-false}"
+          if [ "$APPLE_CERTIFICATE_IMPORTED" != "true" ] || [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "⚠️ Apple signing certificate secrets or APPLE_SIGNING_IDENTITY are missing. The macOS dashboard build will continue unsigned and non-notarized."
+          fi
+
+          if [ "$APPLE_CERTIFICATE_IMPORTED" = "true" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] && { [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; }; then
+            echo "⚠️ Apple notarization secrets are incomplete. The macOS dashboard build will continue signed but non-notarized."
+          fi
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build distributables
+        run: node scripts/build-cross-platform.js
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Verify universal mac app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_binary="$(find out -type f -path '*/Contents/MacOS/breakevendashboard' | head -n 1)"
+          if [ -z "$app_binary" ]; then
+            app_binary="$(find out -type f -path '*/Contents/MacOS/*' | head -n 1)"
+          fi
+          if [ -z "$app_binary" ]; then
+            echo "❌ Could not locate a packaged dashboard binary under out/"
+            exit 1
+          fi
+          echo "📦 Inspecting $app_binary"
+          file "$app_binary"
+          archs="$(lipo -archs "$app_binary")"
+          echo "🧬 Architectures: $archs"
+          if [[ "$archs" != *"x86_64"* ]] || [[ "$archs" != *"arm64"* ]]; then
+            echo "❌ Expected a universal mac app containing both x86_64 and arm64"
+            exit 1
+          fi
+          echo "✅ Verified universal mac app"
+
+      - name: "Debug: List output contents (bash)"
+        if: runner.os != 'Windows'
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [ -d out ]; then
+            echo "📂 Listing out/ contents"
+            find out -maxdepth 6 -print | sort
+          else
+            echo "⚠️ out/ directory does not exist yet. Listing workspace root instead."
+            pwd
+            ls -la
+          fi
+
+      - name: "Debug: List output contents (pwsh)"
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath "out") {
+            Write-Host "📂 Listing out/ contents"
+            Get-ChildItem -Path out -Recurse -Force | Select-Object FullName, Length
+          } else {
+            Write-Host "⚠️ out/ directory does not exist yet. Listing workspace root instead."
+            Get-Location
+            Get-ChildItem -Force
+          }
+
+      - name: Confirm distributables (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "🧪 Checking distributables..."
+          search_roots=()
+          [ -d out ] && search_roots+=("out")
+          [ -d out/make ] && search_roots+=("out/make")
+          if [ ${#search_roots[@]} -eq 0 ]; then
+            echo "❌ No build output directory found under out/ or out/make. Failing build."
+            exit 1
+          fi
+
+          distributables_file="$(mktemp)"
+          find "${search_roots[@]}" -type f | grep -E '\.(dmg|AppImage|deb|rpm|zip|exe)$' | sort -u > "$distributables_file" || true
+          if [ ! -s "$distributables_file" ]; then
+            echo "❌ No distributables found. Failing build."
+            exit 1
+          fi
+
+          cat "$distributables_file"
+          grep -q '\.dmg$' "$distributables_file" && echo "✅ Found .dmg" || true
+          grep -q '\.AppImage$' "$distributables_file" && echo "✅ Found .AppImage" || true
+          grep -q '\.deb$' "$distributables_file" && echo "✅ Found .deb" || true
+          grep -q '\.rpm$' "$distributables_file" && echo "✅ Found .rpm" || true
+          grep -q '\.zip$' "$distributables_file" && echo "✅ Found .zip" || true
+          grep -q '\.exe$' "$distributables_file" && echo "✅ Found .exe" || true
+
+      - name: Confirm distributables (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "🧪 Checking distributables..."
+          $searchRoots = @()
+          if (Test-Path -LiteralPath "out") { $searchRoots += "out" }
+          if (Test-Path -LiteralPath "out/make") { $searchRoots += "out/make" }
+          if ($searchRoots.Count -eq 0) {
+            Write-Error "❌ No build output directory found under out/ or out/make. The build step likely failed before Electron Forge produced artifacts."
+            exit 1
+          }
+
+          $distributables = $searchRoots |
+            ForEach-Object {
+              Get-ChildItem -Path $_ -Recurse -File -Include *.exe,*.dmg,*.AppImage,*.deb,*.rpm,*.zip -ErrorAction SilentlyContinue
+            } |
+            Sort-Object FullName -Unique
+
+          if (-not $distributables) {
+            Write-Error "❌ No distributables found. Failing build."
+            exit 1
+          }
+
+          $distributables | Select-Object -ExpandProperty FullName
+          if ($distributables.Extension -contains ".exe") { Write-Host "✅ Found .exe" }
+          if ($distributables.Extension -contains ".dmg") { Write-Host "✅ Found .dmg" }
+          if ($distributables.Extension -contains ".AppImage") { Write-Host "✅ Found .AppImage" }
+          if ($distributables.Extension -contains ".deb") { Write-Host "✅ Found .deb" }
+          if ($distributables.Extension -contains ".rpm") { Write-Host "✅ Found .rpm" }
+          if ($distributables.Extension -contains ".zip") { Write-Host "✅ Found .zip" }
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-${{ matrix.os }}
+          path: |
+            out/**/*.exe
+            out/**/*.dmg
+            out/**/*.AppImage
+            out/**/*.deb
+            out/**/*.rpm
+            out/**/*.zip
+  verify:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-platform-artifacts/
+
+      - name: List All Artifacts
+        run: ls -R all-platform-artifacts/
+
+      - name: Confirm artifact presence
+        shell: bash
+        run: |
+          echo "🧪 Verifying downloaded artifacts..."
+          count=$(find all-platform-artifacts -type f | grep -Ei '.(exe|dmg|AppImage|deb|rpm|zip)$' | wc -l)
+          if [ "$count" -lt 1 ]; then
+              echo "❌ No distributables found."
+              exit 1
+          fi
+          echo "✅ Found $count artifacts."
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly
+          name: "Automated Dashboard Release"
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Build Summary
+        run: |
+          echo "## ✅ Dashboard Summary" >> $GITHUB_STEP_SUMMARY
+          find all-platform-artifacts -type f >> $GITHUB_STEP_SUMMARY

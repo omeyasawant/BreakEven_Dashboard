@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=BreakEven Dashboard
+Comment=Dashboard for BreakEven Client
+Exec=breakevendashboard
+Icon=breakevendashboard
+Terminal=false
+Type=Application
+Categories=Utility;
