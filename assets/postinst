@@ -1,0 +1,11 @@
+#!/bin/bash
+# postinst script for BreakEven Dashboard (Linux)
+set -e
+
+# Create /opt/breakeven-client if it doesn't exist
+if [ ! -d "/opt/breakeven-client" ]; then
+    mkdir -p /opt/breakeven-client
+    chown $SUDO_USER:$SUDO_USER /opt/breakeven-client || true
+fi
+
+exit 0
